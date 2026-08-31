@@ -334,7 +334,11 @@ function addLanguagesToDropdown() {
 export async function initLocales() {
     langs = await fetch('/locales/lang.json').then(response => response.json());
     localeData = await getLocaleData(localeFile);
-    document.documentElement.lang = localeFile;
+    if (localeFile.startsWith('zh')) {
+        document.documentElement.removeAttribute('lang');
+    } else {
+        document.documentElement.lang = localeFile;
+    }
     applyLocale();
     addLanguagesToDropdown();
     await updateSecretDisplayAfterLocaleApplied();
