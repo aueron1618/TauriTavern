@@ -148,8 +148,22 @@ jobs:
             > "$config_path"
           echo "config_path=$config_path" >> "$GITHUB_OUTPUT"
 
+      - name: Detect Apple signing secrets
+        id: apple-signing
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+        run: |
+          if [ -n "${APPLE_CERTIFICATE}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Apple signing secrets are unavailable; macOS bundles are built unsigned."
+          fi
+
       - name: Setup macOS signing and notarization
-        if: matrix.platform == 'macos-latest'
+        # Forks without Apple signing secrets build unsigned bundles instead of failing.
+        if: matrix.platform == 'macos-latest' && steps.apple-signing.outputs.available == 'true'
         shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -190,6 +204,9 @@ jobs:
 
   mobile:
     needs: prepare
+    outputs:
+      # Uniform across the mobile matrix: publish needs the full iOS-inclusive release set.
+      apple_available: ${{ steps.mobile-secrets.outputs.apple_available }}
     strategy:
       fail-fast: false
       matrix:
@@ -208,18 +225,46 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Detect mobile signing secrets
+        id: mobile-secrets
+        shell: bash
+        env:
+          ANDROID_KEY_BASE64: ${{ secrets.ANDROID_KEY_BASE64 }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          MOBILE: ${{ matrix.mobile }}
+        run: |
+          apple_available=false
+          target_available=false
+          if [ -n "${APPLE_API_KEY_P8}" ]; then
+            apple_available=true
+          fi
+          if [ "${MOBILE}" = "android" ] && [ -n "${ANDROID_KEY_BASE64}" ]; then
+            target_available=true
+          fi
+          if [ "${MOBILE}" = "ios" ] && [ "${apple_available}" = "true" ]; then
+            target_available=true
+          fi
+          if [ "${target_available}" = "false" ]; then
+            echo "::warning::Signing secrets for ${MOBILE} are unavailable; skipping ${MOBILE} bundles."
+          fi
+          {
+            echo "apple_available=${apple_available}"
+            echo "target_available=${target_available}"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Install Android host dependencies
-        if: matrix.mobile == 'android'
+        if: matrix.mobile == 'android' && steps.mobile-secrets.outputs.target_available == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y libglib2.0-dev libgtk-3-dev libwebkit2gtk-4.1-dev
 
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.mobile-secrets.outputs.target_available == 'true'
         with:
           targets: ${{ matrix.mobile == 'android' && 'aarch64-linux-android,armv7-linux-androideabi' || 'aarch64-apple-ios' }}
 
       - name: Setup JDK
-        if: matrix.mobile == 'android'
+        if: matrix.mobile == 'android' && steps.mobile-secrets.outputs.target_available == 'true'
         uses: actions/setup-java@v5
         with:
           java-version: "21"
@@ -230,13 +275,13 @@ jobs:
             src-tauri/crates/tauritavern/gen/android/**/gradle-wrapper.properties
 
       - name: Setup Android SDK
-        if: matrix.mobile == 'android'
+        if: matrix.mobile == 'android' && steps.mobile-secrets.outputs.target_available == 'true'
         uses: android-actions/setup-android@v4
         with:
           packages: platform-tools
 
       - name: Setup Android NDK
-        if: matrix.mobile == 'android'
+        if: matrix.mobile == 'android' && steps.mobile-secrets.outputs.target_available == 'true'
         id: setup-ndk
         uses: nttld/setup-ndk@v1
         with:
@@ -244,7 +289,7 @@ jobs:
           link-to-sdk: true
 
       - name: Configure Android compiler
-        if: matrix.mobile == 'android'
+        if: matrix.mobile == 'android' && steps.mobile-secrets.outputs.target_available == 'true'
         shell: bash
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
@@ -261,19 +306,22 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - uses: swatinem/rust-cache@v2
+        if: steps.mobile-secrets.outputs.target_available == 'true'
         with:
           workspaces: "src-tauri -> target"
 
       - uses: pnpm/setup@v2
+        if: steps.mobile-secrets.outputs.target_available == 'true'
         with:
           runtime: node@22
           cache: true
           install: false
 
       - run: pnpm install --frozen-lockfile
+        if: steps.mobile-secrets.outputs.target_available == 'true'
 
       - name: Prepare public TestFlight build identity
-        if: matrix.mobile == 'ios'
+        if: matrix.mobile == 'ios' && steps.mobile-secrets.outputs.target_available == 'true'
         id: testflight-config
         shell: bash
         run: |
@@ -288,7 +336,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Setup Android signing
-        if: matrix.mobile == 'android'
+        if: matrix.mobile == 'android' && steps.mobile-secrets.outputs.target_available == 'true'
         shell: bash
         run: |
           cd src-tauri/crates/tauritavern/gen/android
@@ -298,7 +346,7 @@ jobs:
           echo "storeFile=$RUNNER_TEMP/keystore.jks" >> keystore.properties
 
       - name: Setup App Store Connect API key
-        if: matrix.mobile == 'ios'
+        if: matrix.mobile == 'ios' && steps.mobile-secrets.outputs.target_available == 'true'
         shell: bash
         env:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
@@ -314,9 +362,11 @@ jobs:
           echo "APPLE_API_KEY_PATH=$key_path" >> "$GITHUB_ENV"
 
       - name: Enable HTTP access for standard mobile bundle
+        if: steps.mobile-secrets.outputs.target_available == 'true'
         run: ./scripts/ci/configure-mobile-http.sh enable "${{ matrix.mobile }}"
 
       - name: Build mobile bundle
+        if: steps.mobile-secrets.outputs.target_available == 'true'
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -335,11 +385,11 @@ jobs:
           workflowArtifactNamePattern: 'TauriTavern-${{ needs.prepare.outputs.asset_time }}-canary-[platform]-[arch]-[bundle]'
 
       - name: Restore iOS transport security for TestFlight
-        if: matrix.mobile == 'ios'
+        if: matrix.mobile == 'ios' && steps.mobile-secrets.outputs.target_available == 'true'
         run: ./scripts/ci/configure-mobile-http.sh disable ios
 
       - name: Build public TestFlight IPA
-        if: matrix.mobile == 'ios'
+        if: matrix.mobile == 'ios' && steps.mobile-secrets.outputs.target_available == 'true'
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -360,6 +410,8 @@ jobs:
 
   testflight:
     needs: [prepare, publish]
+    # TestFlight distribution needs a successful publish with iOS assets.
+    if: ${{ needs.publish.result == 'success' }}
     permissions:
       actions: read
       contents: write
@@ -523,6 +575,10 @@ jobs:
 
   publish:
     needs: [prepare, desktop, mobile, notes]
+    # The full release set includes macOS and iOS artifacts that require Apple
+    # signing secrets. Skip publishing on repositories (forks) without them
+    # instead of failing asset validation.
+    if: ${{ needs.mobile.outputs.apple_available == 'true' && needs.mobile.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -623,6 +679,7 @@ jobs:
 
   publish-package-repositories:
     needs: [prepare, publish]
+    if: ${{ needs.publish.result == 'success' }}
     continue-on-error: true
     runs-on: ubuntu-latest
     permissions:
@@ -696,6 +753,7 @@ jobs:
 
   publish-nix-cache:
     needs: [prepare, publish]
+    if: ${{ needs.publish.result == 'success' }}
     continue-on-error: true
     strategy:
       fail-fast: false
