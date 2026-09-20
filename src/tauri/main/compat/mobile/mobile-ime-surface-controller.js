@@ -183,6 +183,8 @@ export function installMobileImeSurfaceController() {
     let activeSurface = null;
     let activeKind = SURFACE_KIND.Composer;
     let desiredImeTarget = null;
+    let pendingPointerEditable = null;
+    let pendingPointerRoutingTimer = null;
 
     const applyRouting = (editableOrNull) => {
         if (!editableOrNull) {
@@ -209,14 +211,42 @@ export function installMobileImeSurfaceController() {
         }
     };
 
+    const deferPointerRouting = (editable) => {
+        pendingPointerEditable = editable;
+        if (pendingPointerRoutingTimer !== null) {
+            clearTimeout(pendingPointerRoutingTimer);
+        }
+        pendingPointerRoutingTimer = setTimeout(() => {
+            pendingPointerRoutingTimer = null;
+            if (pendingPointerEditable === editable && document.activeElement === editable) {
+                pendingPointerEditable = null;
+                applyRouting(editable);
+            }
+        }, 0);
+    };
+
     const onFocusIn = (event) => {
         const target = event.target;
-        // Focus owns IME routing; non-editable focus releases the mobile lift.
-        if (!isImeEditable(target)) {
-            applyRouting(null);
+        // Android WebView resolves the textarea selection after focusin. Do not
+        // resize/reposition the IME surface before a pointer-driven selection is
+        // complete, otherwise the caret can be painted at the surface's fixed
+        // height instead of at the tapped text position.
+        if (isImeEditable(target)) {
+            if (pendingPointerEditable === target) {
+                deferPointerRouting(/** @type {HTMLElement} */ (target));
+            } else {
+                pendingPointerEditable = null;
+                if (pendingPointerRoutingTimer !== null) {
+                    clearTimeout(pendingPointerRoutingTimer);
+                    pendingPointerRoutingTimer = null;
+                }
+                applyRouting(/** @type {HTMLElement} */ (target));
+            }
             return;
         }
-        applyRouting(/** @type {HTMLElement} */ (target));
+
+        // Focus owns IME routing; non-editable focus releases the mobile lift.
+        applyRouting(null);
     };
 
     const onFocusOut = () => {
@@ -231,6 +261,10 @@ export function installMobileImeSurfaceController() {
 
     const onPointerDown = (event) => {
         const target = event.target;
+        if (isImeEditable(target)) {
+            pendingPointerEditable = /** @type {HTMLElement} */ (target);
+            return;
+        }
         if (!activeSurface && desiredImeTarget === null) {
             return;
         }
@@ -241,15 +275,38 @@ export function installMobileImeSurfaceController() {
         applyRouting(null);
     };
 
+    const onPointerUp = (event) => {
+        const target = event.target;
+        if (pendingPointerEditable && target === pendingPointerEditable) {
+            deferPointerRouting(pendingPointerEditable);
+        }
+    };
+
+    const onPointerCancel = () => {
+        pendingPointerEditable = null;
+        if (pendingPointerRoutingTimer !== null) {
+            clearTimeout(pendingPointerRoutingTimer);
+            pendingPointerRoutingTimer = null;
+        }
+    };
+
     document.addEventListener('focusin', onFocusIn, true);
     document.addEventListener('focusout', onFocusOut, true);
     document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('pointerup', onPointerUp, true);
+    document.addEventListener('pointercancel', onPointerCancel, true);
 
     return {
         dispose() {
             document.removeEventListener('focusin', onFocusIn, true);
             document.removeEventListener('focusout', onFocusOut, true);
             document.removeEventListener('pointerdown', onPointerDown, true);
+            document.removeEventListener('pointerup', onPointerUp, true);
+            document.removeEventListener('pointercancel', onPointerCancel, true);
+            if (pendingPointerRoutingTimer !== null) {
+                clearTimeout(pendingPointerRoutingTimer);
+                pendingPointerRoutingTimer = null;
+            }
         },
     };
 }

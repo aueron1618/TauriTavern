@@ -17,8 +17,8 @@ Linux 系统软件源默认使用 `stable`，并提供独立的 `canary` 套件�
 
 前端把有效渠道传给 `check_for_update` command，application service 决定比较语义，GitHub adapter 只负责读取渠道对应的数据：
 
-- Stable：`GET /repos/Darkatse/TauriTavern/releases/latest`
-- Canary：`GET /repos/Darkatse/TauriTavern/releases/tags/Canary` 与 `GET /repos/Darkatse/TauriTavern/commits/Canary`
+- Stable：`GET /repos/aueron1618/TauriTavern/releases/latest`
+- Canary：`GET /repos/aueron1618/TauriTavern/releases/tags/Canary` 与 `GET /repos/aueron1618/TauriTavern/commits/Canary`
 
 Canary Release 必须是 prerelease；Stable latest 不能是 prerelease。返回给前端的 `release_token` 是机器去重键：Stable 使用 tag，Canary 使用 `sha12`。弹窗主要展示 Release name，因此 Canary 的时间格式由发布流水线统一产生。
 

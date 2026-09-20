@@ -10,11 +10,11 @@ use tt_domain::models::update::{ReleaseInfo, UpdateChannel};
 use tt_ports::repositories::update_repository::UpdateRepository;
 
 const GITHUB_API_LATEST_RELEASE: &str =
-    "https://api.github.com/repos/Darkatse/TauriTavern/releases/latest";
+    "https://api.github.com/repos/aueron1618/TauriTavern/releases/latest";
 const GITHUB_API_CANARY_RELEASE: &str =
-    "https://api.github.com/repos/Darkatse/TauriTavern/releases/tags/Canary";
+    "https://api.github.com/repos/aueron1618/TauriTavern/releases/tags/Canary";
 const GITHUB_API_CANARY_COMMIT: &str =
-    "https://api.github.com/repos/Darkatse/TauriTavern/commits/Canary";
+    "https://api.github.com/repos/aueron1618/TauriTavern/commits/Canary";
 
 #[derive(Debug, Deserialize)]
 struct GitHubRelease {

@@ -74,6 +74,25 @@ test('IME focus routing moves between composer and fixed-shell surfaces', async 
     harness.window.close();
 });
 
+test('pointer-driven IME routing waits until the tapped caret position is resolved', async () => {
+    const harness = await createHarness();
+    const controller = harness.install();
+    const { document, Event } = harness.window;
+    const fixedShell = document.getElementById('character_popup');
+    const editor = document.getElementById('editor');
+
+    editor.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    editor.focus();
+    assert.deepEqual(harness.calls, []);
+
+    editor.dispatchEvent(new Event('pointerup', { bubbles: true }));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(harness.calls.at(-1), fixedShell);
+    assert.equal(fixedShell.hasAttribute('data-tt-ime-active'), true);
+
+    controller.dispose();
+    harness.window.close();
+});
 test('IME routing ignores controls that cannot summon a keyboard', async () => {
     const harness = await createHarness();
     const controller = harness.install();
