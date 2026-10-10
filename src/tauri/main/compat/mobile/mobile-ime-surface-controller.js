@@ -4,6 +4,8 @@ const SURFACE_ATTR = 'data-tt-ime-surface';
 const ACTIVE_ATTR = 'data-tt-ime-active';
 const MOBILE_SURFACE_ATTR = 'data-tt-mobile-surface';
 const FULLSCREEN_WINDOW_SURFACE = 'fullscreen-window';
+const DIALOG_TOP_VAR = '--tt-ime-dialog-top';
+const DIALOG_HEIGHT_VAR = '--tt-ime-dialog-height';
 
 const SURFACE_KIND = /** @type {const} */ ({
     Composer: 'composer',
@@ -100,6 +102,19 @@ function isImeEditable(element) {
     return element.isContentEditable;
 }
 
+function resolvePointerEditable(target) {
+    if (!(target instanceof HTMLElement)) {
+        return null;
+    }
+    // A tap may land on a span/line inside contenteditable (including CodeMirror),
+    // whereas focusin targets the editing host. Compare the same owner in both paths.
+    let editable = target;
+    while (editable.isContentEditable && editable.parentElement?.isContentEditable) {
+        editable = editable.parentElement;
+    }
+    return isImeEditable(editable) ? editable : null;
+}
+
 function isImeReleaseCommand(element) {
     if (!(element instanceof HTMLElement)) {
         return false;
@@ -152,19 +167,30 @@ function resolveImeSurfaceRoot(editable) {
 }
 
 function setActiveSurface(previous, next, kind) {
-    if (previous === next) {
-        if (previous && previous.getAttribute(SURFACE_ATTR) !== kind) {
-            previous.setAttribute(SURFACE_ATTR, kind);
-        }
+    if (previous === next && (!next || next.getAttribute(SURFACE_ATTR) === kind)) {
         return;
     }
 
+    // Read before changing ownership. Native dialog offset geometry is unscaled:
+    // showModal autofocus can run at scaleY(0) in the popup's opening animation.
+    // The legacy popup instead uses translateY(-50%) for positioning, so retain
+    // its visual top while taking the height from the untransformed layout box.
+    const dialogRect = next && kind === SURFACE_KIND.Dialog ? {
+        top: next.tagName === 'DIALOG' ? next.offsetTop : next.getBoundingClientRect().top,
+        height: next.offsetHeight,
+    } : null;
     if (previous) {
         previous.removeAttribute(ACTIVE_ATTR);
         previous.removeAttribute(SURFACE_ATTR);
+        previous.style.removeProperty(DIALOG_TOP_VAR);
+        previous.style.removeProperty(DIALOG_HEIGHT_VAR);
     }
 
     if (next) {
+        if (dialogRect) {
+            next.style.setProperty(DIALOG_TOP_VAR, `${dialogRect.top}px`);
+            next.style.setProperty(DIALOG_HEIGHT_VAR, `${dialogRect.height}px`);
+        }
         next.setAttribute(ACTIVE_ATTR, '');
         next.setAttribute(SURFACE_ATTR, kind);
     }
@@ -211,15 +237,25 @@ export function installMobileImeSurfaceController() {
         }
     };
 
-    const deferPointerRouting = (editable) => {
-        pendingPointerEditable = editable;
+    const clearPointerRouting = () => {
+        pendingPointerEditable = null;
+        if (pendingPointerRoutingTimer !== null) {
+            clearTimeout(pendingPointerRoutingTimer);
+            pendingPointerRoutingTimer = null;
+        }
+    };
+
+    const deferPointerRouting = () => {
+        const editable = pendingPointerEditable;
+        if (!editable) {
+            return;
+        }
         if (pendingPointerRoutingTimer !== null) {
             clearTimeout(pendingPointerRoutingTimer);
         }
         pendingPointerRoutingTimer = setTimeout(() => {
-            pendingPointerRoutingTimer = null;
-            if (pendingPointerEditable === editable && document.activeElement === editable) {
-                pendingPointerEditable = null;
+            clearPointerRouting();
+            if (document.activeElement === editable && isImeEditable(editable)) {
                 applyRouting(editable);
             }
         }, 0);
@@ -227,25 +263,19 @@ export function installMobileImeSurfaceController() {
 
     const onFocusIn = (event) => {
         const target = event.target;
-        // Android WebView resolves the textarea selection after focusin. Do not
-        // resize/reposition the IME surface before a pointer-driven selection is
-        // complete, otherwise the caret can be painted at the surface's fixed
-        // height instead of at the tapped text position.
+        // Do not start a timer from focusin: it may fire while the finger is still
+        // down, before WebView resolves the tapped selection. Gesture completion
+        // owns deferred routing; programmatic focus remains immediate.
         if (isImeEditable(target)) {
-            if (pendingPointerEditable === target) {
-                deferPointerRouting(/** @type {HTMLElement} */ (target));
-            } else {
-                pendingPointerEditable = null;
-                if (pendingPointerRoutingTimer !== null) {
-                    clearTimeout(pendingPointerRoutingTimer);
-                    pendingPointerRoutingTimer = null;
-                }
+            if (pendingPointerEditable !== target) {
+                clearPointerRouting();
                 applyRouting(/** @type {HTMLElement} */ (target));
             }
             return;
         }
 
         // Focus owns IME routing; non-editable focus releases the mobile lift.
+        clearPointerRouting();
         applyRouting(null);
     };
 
@@ -255,14 +285,20 @@ export function installMobileImeSurfaceController() {
             if (isImeEditable(nextActive)) {
                 return;
             }
+            clearPointerRouting();
             applyRouting(null);
         });
     };
 
     const onPointerDown = (event) => {
+        if (event.isPrimary === false || event.button > 0) {
+            return;
+        }
+        clearPointerRouting();
         const target = event.target;
-        if (isImeEditable(target)) {
-            pendingPointerEditable = /** @type {HTMLElement} */ (target);
+        const editable = resolvePointerEditable(target);
+        if (editable) {
+            pendingPointerEditable = editable;
             return;
         }
         if (!activeSurface && desiredImeTarget === null) {
@@ -275,38 +311,30 @@ export function installMobileImeSurfaceController() {
         applyRouting(null);
     };
 
-    const onPointerUp = (event) => {
-        const target = event.target;
-        if (pendingPointerEditable && target === pendingPointerEditable) {
-            deferPointerRouting(pendingPointerEditable);
-        }
-    };
-
-    const onPointerCancel = () => {
-        pendingPointerEditable = null;
-        if (pendingPointerRoutingTimer !== null) {
-            clearTimeout(pendingPointerRoutingTimer);
-            pendingPointerRoutingTimer = null;
+    const onPointerEnd = (event) => {
+        if (event.isPrimary !== false) {
+            // pointercancel can end a selection/scroll gesture on an already
+            // focused editor. Reconcile its actual focus instead of stranding it.
+            deferPointerRouting();
         }
     };
 
     document.addEventListener('focusin', onFocusIn, true);
     document.addEventListener('focusout', onFocusOut, true);
     document.addEventListener('pointerdown', onPointerDown, true);
-    document.addEventListener('pointerup', onPointerUp, true);
-    document.addEventListener('pointercancel', onPointerCancel, true);
+    document.addEventListener('pointerup', onPointerEnd, true);
+    document.addEventListener('pointercancel', onPointerEnd, true);
 
     return {
         dispose() {
             document.removeEventListener('focusin', onFocusIn, true);
             document.removeEventListener('focusout', onFocusOut, true);
             document.removeEventListener('pointerdown', onPointerDown, true);
-            document.removeEventListener('pointerup', onPointerUp, true);
-            document.removeEventListener('pointercancel', onPointerCancel, true);
-            if (pendingPointerRoutingTimer !== null) {
-                clearTimeout(pendingPointerRoutingTimer);
-                pendingPointerRoutingTimer = null;
-            }
+            document.removeEventListener('pointerup', onPointerEnd, true);
+            document.removeEventListener('pointercancel', onPointerEnd, true);
+            clearPointerRouting();
+            applyRouting(null);
+            installed = false;
         },
     };
 }

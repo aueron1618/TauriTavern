@@ -1898,7 +1898,6 @@ button {
 
     .tt-chat-input-editor .tt-chat-input-editor__textarea {
         padding: 10px;
-        scroll-padding-bottom: max(var(--tt-viewport-bottom-inset, var(--tt-inset-bottom, 0px)), 0px);
     }
 }
 

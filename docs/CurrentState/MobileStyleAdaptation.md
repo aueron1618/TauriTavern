@@ -164,9 +164,10 @@ Android 说明：
   - `data-tt-ime-surface="composer|fixed-shell|dialog"`
 - 调用 `window.__TAURITAVERN_INSETS__.setImeTarget(rootOrNull)` 将 `--tt-ime-bottom` 注入到 active root（`#sheld` 使用默认回退，因此传 `null`）。
 - composer（`#sheld/#form_sheld`）继续由 `android-ime-layout-host` 的 lift/spacer 消费键盘偏移（不扩散到其它界面）。
-- fixed-shell（角色编辑、world/editor drawer、Prompt Manager 等）由 geometry firewall 通过 `height/max-height/bottom + scroll-padding-bottom` 消费 `--tt-ime-bottom`，避免输入被键盘遮挡。
+- fixed-shell（角色编辑、world/editor drawer、Prompt Manager 等）由 geometry firewall 通过 `height/max-height/bottom` 消费 `--tt-ime-bottom`，避免输入被键盘遮挡。已经减高的 surface 不再把键盘高度重复设为 `scroll-padding-bottom`；否则 WebView 会把仍然可见的光标滚动到偏上的固定高度，聚焦和继续输入都会触发。全屏聊天编辑器的内部 textarea 同样不重复预留键盘。
 - 为避免 `height: 100%` + `flex: 1` 全高表单出现“减高但不增滚动”的体感，firewall 还会对常见 scroll container 注入 `::after` spacer，其高度使用 `--tt-viewport-bottom-inset`（safe-area + IME）提供 reachability slack。
-- dialog（`dialog.popup[open]` / `#dialogue_popup`）走 `dialog` 分支：firewall 调整 `top/max-height` 并设置 `scroll-padding-bottom`，避免输入被键盘遮挡。
+- dialog（`dialog.popup[open]` / `#dialogue_popup`）走 `dialog` 分支：首次取得 ownership 时记录弹窗原来的 top/height；firewall 保持该 top，仅在与键盘相交时做足够的上移，并限制最大高度。不再因为聚焦就将所有弹窗吸附到顶部。ownership 释放时清理测量值。
+- 指针聚焦等到 `pointerup/pointercancel` 后的任务再路由，不从 `focusin` 启动可能在手指松开前执行的定时器。点击 contenteditable 内部行/span 与 focusin 统一使用编辑宿主判断；纯程序化聚焦仍立即路由。控制器不设置选区、不拦截输入，也不持续回写滚动位置。
 
 备注：
 
@@ -210,6 +211,9 @@ native 侧实现：`src-tauri/crates/tauritavern/gen/android/app/src/main/java/c
 1. Android（刘海机型）+ 沉浸模式：第一方顶部 UI 与第三方脚本浮层允许进入刘海/状态栏区域。
 2. 键盘弹出/收起：`#sheld` 高度与输入框不被遮挡。
 3. 旋转屏幕：safe‑area 与布局重新校验无抖动回归。
+4. Android 真机：键盘已打开时，在角色编辑、世界书、Prompt Manager 和全屏编辑器的上/中/下可见文本处点击并连续输入（含中文组合输入）；已可见光标不应被吸附到另一固定高度。键盘遮挡位置允许做必要避让，不承诺在键盘下面维持原坐标。
+5. 长按选字、拖动选择手柄、contenteditable/CodeMirror 内部点击、快速切换输入框以及弹窗关闭后重开，确认无选区覆盖或旧 surface 回跳。
+6. 浏览器几何回归：从仓库根目录启动静态 HTTP 服务，访问 `/tests/browser/mobile-ime.html`（视口高度至少 700px；分别测试手机宽度及 >1000px 平板宽度），页面返回 `passed: true`。该用例执行真实 Chromium 聚焦/输入和布局，不替代 Android IME 真机测试。
 
 快速调试点：
 

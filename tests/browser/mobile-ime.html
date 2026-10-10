@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Android IME geometry regression</title>
+    <link rel="stylesheet" href="../../src/css/animations.css">
+    <style>
+        :root {
+            --tt-base-viewport-height: 800px;
+            --doc-height: 800px;
+            --topBarBlockSize: 40px;
+            --bottomFormBlockSize: 40px;
+            --tt-inset-top: 0px;
+            --tt-inset-bottom: 0px;
+            --tt-inset-left: 0px;
+            --tt-inset-right: 0px;
+            --tt-ime-bottom: 0px;
+        }
+        body { margin: 0; font: 16px sans-serif; }
+        #character_popup { position: fixed; left: 0; width: 360px; overflow: auto; }
+        textarea { display: block; width: 300px; height: 80px; box-sizing: border-box; font: 20px/30px monospace; }
+        dialog.popup { position: fixed; width: 340px; height: 300px; box-sizing: border-box; margin: auto; padding: 10px; }
+        #results { position: fixed; inset: 0 0 auto; z-index: 100; margin: 0; background: white; color: black; }
+    </style>
+</head>
+<body>
+    <!-- Serve the repository root over HTTP and open /tests/browser/mobile-ime.html.
+         Real layout is required: happy-dom cannot reproduce native focus scrolling.
+         This exercises host geometry, not an Android keyboard; also run the device
+         checklist in docs/CurrentState/MobileStyleAdaptation.md. -->
+    <div id="sheld"></div>
+    <div id="character_popup">
+        <div style="height: 70px"></div>
+        <textarea id="upper">first line
+second line</textarea>
+        <div style="height: 110px"></div>
+        <textarea id="lower">first line
+second line</textarea>
+        <div style="height: 1000px"></div>
+    </div>
+    <dialog class="popup">
+        <button autofocus>Focus-neutral control</button>
+        <textarea id="dialog-editor">first line
+second line</textarea>
+    </dialog>
+    <pre id="results">Running…</pre>
+    <script type="module">
+        import { installMobileGeometryFirewall } from '../../src/tauri/main/compat/mobile/mobile-geometry-firewall.js';
+        import { installMobileImeSurfaceController } from '../../src/tauri/main/compat/mobile/mobile-ime-surface-controller.js';
+
+        // Exercise Android-only routing on desktop Chromium as well.
+        Object.defineProperty(navigator, 'userAgent', { configurable: true, value: 'Android IME regression' });
+        const results = [];
+        const root = document.documentElement;
+        root.style.setProperty('--tt-base-viewport-height', `${innerHeight}px`);
+        root.style.setProperty('--doc-height', `${innerHeight}px`);
+        let target = document.getElementById('sheld');
+        let keyboard = 0;
+        function setKeyboard(height) {
+            keyboard = height;
+            target.style.setProperty('--tt-ime-bottom', `${height}px`);
+        }
+        window.__TAURITAVERN_INSETS__ = {
+            setImeTarget(next) {
+                target.style.removeProperty('--tt-ime-bottom');
+                target = next ?? document.getElementById('sheld');
+                setKeyboard(keyboard);
+            },
+        };
+        function near(actual, expected, description) {
+            if (Math.abs(actual - expected) > 1) {
+                throw new Error(`${description}: expected ${expected}, got ${actual}`);
+            }
+            results.push(description);
+        }
+        const firewall = installMobileGeometryFirewall();
+        const routing = installMobileImeSurfaceController();
+        try {
+            if (!document.hasFocus()) throw new Error('Run in the foreground tab so native focus events are dispatched.');
+            if (innerHeight < 700) throw new Error('Run geometry checks in a viewport at least 700px tall.');
+            const panel = document.getElementById('character_popup');
+            setKeyboard(250);
+            for (const id of ['upper', 'lower']) {
+                const editor = document.getElementById(id);
+                const top = editor.getBoundingClientRect().top;
+                editor.focus();
+                near(editor.getBoundingClientRect().top, top, `${id}: focus keeps visible text at its height`);
+                for (const position of [2, 14]) {
+                    editor.setSelectionRange(position, position);
+                    // Chromium's native edit pipeline, including caret reveal.
+                    if (!document.execCommand('insertText', false, '字')) throw new Error('Native insertion failed');
+                    near(panel.scrollTop, 0, `${id}: typing at ${position} does not realign the panel`);
+                    near(editor.selectionStart, position + 1, `${id}: insertion preserves the selected text position`);
+                }
+            }
+
+            document.activeElement.blur();
+            await Promise.resolve();
+            setKeyboard(0);
+            const dialog = document.querySelector('dialog');
+            dialog.showModal();
+            const initial = dialog.getBoundingClientRect();
+            const editor = document.getElementById('dialog-editor');
+            editor.focus();
+            near(dialog.getBoundingClientRect().top, initial.top, 'dialog: focus does not snap to top');
+            const inset = innerHeight - initial.bottom - 20;
+            setKeyboard(inset);
+            near(dialog.getBoundingClientRect().top, initial.top, 'dialog: no movement while it fits above IME');
+            setKeyboard(inset + 100);
+            const lifted = dialog.getBoundingClientRect();
+            near(lifted.bottom, innerHeight - keyboard - 16, 'dialog: move only by the overlap plus edge gap');
+            setKeyboard(0);
+            near(dialog.getBoundingClientRect().top, initial.top, 'dialog: keyboard close restores original height');
+            dialog.close();
+            await Promise.resolve();
+            // Popup autofocus is allowed during pop-in's scaleY(0). The saved
+            // geometry must describe the final layout box, not the animation frame.
+            dialog.style.animation = 'pop-in 1s paused';
+            dialog.showModal();
+            near(dialog.getBoundingClientRect().height, 0, 'dialog: exercise the collapsed pop-in frame');
+            editor.focus();
+            dialog.style.animation = 'none';
+            near(dialog.getBoundingClientRect().top, initial.top, 'dialog: opening animation does not corrupt focus geometry');
+            dialog.close();
+            window.imeRegressionResult = { passed: true, checks: results };
+        } catch (error) {
+            window.imeRegressionResult = { passed: false, checks: results, error: String(error) };
+        } finally {
+            routing.dispose();
+            firewall.dispose();
+            document.getElementById('results').textContent = JSON.stringify(window.imeRegressionResult, null, 2);
+        }
+    </script>
+</body>
+</html>

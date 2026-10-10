@@ -340,7 +340,9 @@ body [data-tt-ime-surface="fixed-shell"][data-tt-ime-active] {
   --tt-bottom-inset: max(var(--tt-inset-bottom), 0px);
   --tt-viewport-bottom-inset-local: max(var(--tt-bottom-inset), var(--tt-ime-bottom));
   --tt-keyboard-offset: max(calc(var(--tt-viewport-bottom-inset-local) - var(--tt-bottom-inset)), 0px);
-  scroll-padding-bottom: var(--tt-keyboard-offset) !important;
+  /* The surface is already reduced by the IME. Reserving the keyboard again
+   * here makes WebView scroll a visible caret toward a fixed line on every edit. */
+  scroll-padding-bottom: 0 !important;
 }
 
 body #character_popup[data-tt-ime-surface="fixed-shell"][data-tt-ime-active] {
@@ -372,19 +374,24 @@ body [data-tt-ime-surface="dialog"][data-tt-ime-active] {
   --tt-bottom-inset: max(var(--tt-inset-bottom), 0px);
   --tt-viewport-bottom-inset-local: max(var(--tt-bottom-inset), var(--tt-ime-bottom));
   --tt-keyboard-offset: max(calc(var(--tt-viewport-bottom-inset-local) - var(--tt-bottom-inset)), 0px);
-  scroll-padding-bottom: var(--tt-keyboard-offset) !important;
+  scroll-padding-bottom: 0 !important;
+  --tt-ime-dialog-safe-top: calc(max(var(--tt-inset-top), 0px) + 1em);
+  --tt-ime-dialog-visible-bottom: calc(var(--tt-base-viewport-height, var(--doc-height)) - var(--tt-viewport-bottom-inset-local) - 1em);
+  /* Retain the pre-focus position; move only as far as needed to fit above IME. */
+  --tt-ime-dialog-resolved-top: max(var(--tt-ime-dialog-safe-top), min(var(--tt-ime-dialog-top), calc(var(--tt-ime-dialog-visible-bottom) - var(--tt-ime-dialog-height))));
 }
 
-body dialog.popup[data-tt-ime-surface="dialog"][data-tt-ime-active] {
-  top: calc(max(var(--tt-inset-top), 0px) + 1em) !important;
+body dialog.popup[data-tt-ime-surface="dialog"][data-tt-ime-active],
+body #dialogue_popup[data-tt-ime-surface="dialog"][data-tt-ime-active] {
+  top: var(--tt-ime-dialog-resolved-top) !important;
   bottom: auto !important;
-  max-height: calc(var(--tt-base-viewport-height, var(--doc-height)) - max(var(--tt-inset-top), 0px) - var(--tt-viewport-bottom-inset-local) - 2em) !important;
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+  max-height: max(0px, calc(var(--tt-ime-dialog-visible-bottom) - var(--tt-ime-dialog-resolved-top))) !important;
 }
 
 body #dialogue_popup[data-tt-ime-surface="dialog"][data-tt-ime-active] {
-  top: calc(max(var(--tt-inset-top), 0px) + 1em) !important;
   transform: none !important;
-  max-height: calc(var(--tt-base-viewport-height, var(--doc-height)) - max(var(--tt-inset-top), 0px) - var(--tt-viewport-bottom-inset-local) - 2em) !important;
 }
 
 body [data-tt-mobile-surface="fullscreen-window"][data-tt-mobile-surface][data-tt-mobile-surface][data-tt-ime-surface="fixed-shell"][data-tt-ime-active] {

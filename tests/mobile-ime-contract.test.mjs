@@ -74,21 +74,30 @@ test('IME focus routing moves between composer and fixed-shell surfaces', async 
     harness.window.close();
 });
 
-test('pointer-driven IME routing waits until the tapped caret position is resolved', async () => {
+test('pointer-driven IME routing waits for release even when focus precedes a long press', async (t) => {
     const harness = await createHarness();
     const controller = harness.install();
     const { document, Event } = harness.window;
     const fixedShell = document.getElementById('character_popup');
     const editor = document.getElementById('editor');
 
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    editor.value = 'first line\nsecond line\nthird line';
     editor.dispatchEvent(new Event('pointerdown', { bubbles: true }));
     editor.focus();
+    t.mock.timers.tick(1000);
     assert.deepEqual(harness.calls, []);
+    assert.equal(fixedShell.hasAttribute('data-tt-ime-active'), false);
 
+    editor.setSelectionRange(14, 14);
+    editor.scrollTop = 20;
     editor.dispatchEvent(new Event('pointerup', { bubbles: true }));
-    await new Promise(resolve => setTimeout(resolve, 0));
+    t.mock.timers.tick(0);
     assert.equal(harness.calls.at(-1), fixedShell);
     assert.equal(fixedShell.hasAttribute('data-tt-ime-active'), true);
+    assert.equal(editor.selectionStart, 14);
+    assert.equal(editor.selectionEnd, 14);
+    assert.equal(editor.scrollTop, 20);
 
     controller.dispose();
     harness.window.close();
@@ -110,5 +119,77 @@ test('IME routing ignores controls that cannot summon a keyboard', async () => {
 test('IME routing does not install outside Android', async () => {
     const harness = await createHarness({ android: false });
     assert.equal(harness.install(), null);
+    harness.window.close();
+});
+
+test('a tap on a contenteditable child waits for the editing host selection', async (t) => {
+    const harness = await createHarness();
+    const { document, Event } = harness.window;
+    const host = document.createElement('div');
+    host.contentEditable = 'true';
+    host.tabIndex = 0;
+    host.innerHTML = '<div><span>Editable line</span></div>';
+    document.getElementById('character_popup').append(host);
+    // happy-dom does not inherit isContentEditable from editing ancestors.
+    for (const element of [host, ...host.querySelectorAll('*')]) {
+        Object.defineProperty(element, 'isContentEditable', { value: true });
+        element.getClientRects = () => [{}];
+    }
+    const controller = harness.install();
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+
+    host.querySelector('span').dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    host.focus();
+    t.mock.timers.tick(500);
+    assert.deepEqual(harness.calls, []);
+    host.querySelector('div').dispatchEvent(new Event('pointerup', { bubbles: true }));
+    t.mock.timers.tick(0);
+    assert.equal(harness.calls.at(-1), document.getElementById('character_popup'));
+    controller.dispose();
+    harness.window.close();
+});
+
+test('cancelled gestures reconcile focus without reviving an abandoned editor', async (t) => {
+    const harness = await createHarness();
+    const controller = harness.install();
+    const { document, Event } = harness.window;
+    const editor = document.getElementById('editor');
+    const fixedShell = document.getElementById('character_popup');
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+
+    editor.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    editor.focus();
+    editor.dispatchEvent(new Event('pointercancel', { bubbles: true }));
+    t.mock.timers.tick(0);
+    assert.equal(harness.calls.at(-1), fixedShell);
+
+    editor.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    editor.dispatchEvent(new Event('pointerup', { bubbles: true }));
+    document.getElementById('composer').focus();
+    t.mock.timers.tick(0);
+    assert.equal(harness.calls.at(-1), null);
+    assert.equal(fixedShell.hasAttribute('data-tt-ime-active'), false);
+    controller.dispose();
+    harness.window.close();
+});
+
+test('disposing IME routing cancels a pending gesture and allows reinstall', async (t) => {
+    const harness = await createHarness();
+    const controller = harness.install();
+    const { document, Event } = harness.window;
+    const editor = document.getElementById('editor');
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    editor.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    editor.focus();
+    editor.dispatchEvent(new Event('pointerup', { bubbles: true }));
+    controller.dispose();
+    t.mock.timers.tick(0);
+    assert.deepEqual(harness.calls, []);
+
+    editor.blur();
+    const reinstalled = harness.install();
+    editor.focus();
+    assert.equal(harness.calls.at(-1), document.getElementById('character_popup'));
+    reinstalled.dispose();
     harness.window.close();
 });
